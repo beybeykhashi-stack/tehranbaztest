@@ -1,0 +1,10 @@
+[
+  { "start": "00:00:00", "file": "assets/audio/track_a.mp3", "loopWithinSlot": true },
+  { "start": "03:00:00", "file": "assets/audio/track_b.mp3", "loopWithinSlot": true },
+  { "start": "06:00:00", "file": "assets/audio/track_c.mp3", "loopWithinSlot": true },
+  { "start": "09:00:00", "file": "assets/audio/track_d.mp3", "loopWithinSlot": true },
+  { "start": "12:00:00", "file": "assets/audio/track_e.mp3", "loopWithinSlot": true },
+  { "start": "15:00:00", "file": "assets/audio/track_f.mp3", "loopWithinSlot": true },
+  { "start": "18:00:00", "file": "assets/audio/track_g.mp3", "loopWithinSlot": true },
+  { "start": "21:00:00", "file": "assets/audio/track_h.mp3", "loopWithinSlot": true }
+]
