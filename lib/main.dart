@@ -95,6 +95,8 @@ class _HomePageState extends State<HomePage> with WindowListener {
   DateTime _now = DateTime.now();
   late String _musicDirectory;
   final TextEditingController _folderController = TextEditingController();
+  final Map<String, TextEditingController> _startControllers = {};
+  final Map<String, FocusNode> _startFocusNodes = {};
 
   final SystemTray _systemTray = SystemTray();
   final Menu _trayMenu = Menu();
@@ -189,6 +191,12 @@ class _HomePageState extends State<HomePage> with WindowListener {
     windowManager.removeListener(this);
     _tickSubscription?.cancel();
     _folderController.dispose();
+    for (final controller in _startControllers.values) {
+      controller.dispose();
+    }
+    for (final node in _startFocusNodes.values) {
+      node.dispose();
+    }
     unawaited(_systemTray.destroy());
     super.dispose();
   }
@@ -249,6 +257,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Widget _buildScheduleList(DaySchedule schedule, int currentIndex) {
+    _syncStartControllers(schedule);
     return SizedBox(
       width: 320,
       child: Column(
@@ -300,7 +309,8 @@ class _HomePageState extends State<HomePage> with WindowListener {
               itemBuilder: (context, index) {
                 final entry = schedule.entries[index];
                 final isCurrent = index == currentIndex;
-                final controller = TextEditingController(text: _formatTime(entry.startSec).substring(3));
+                final controller = _startControllers[entry.file]!;
+                final focusNode = _startFocusNodes[entry.file]!;
                 return Container(
                   key: ValueKey(entry.file),
                   color: isCurrent ? Colors.white10 : Colors.transparent,
@@ -311,8 +321,11 @@ class _HomePageState extends State<HomePage> with WindowListener {
                         width: 70,
                         child: TextField(
                           controller: controller,
+                          focusNode: focusNode,
                           decoration: const InputDecoration(labelText: 'mm:ss'),
                           onSubmitted: (value) => _updateStart(entry, value),
+                          onEditingComplete: () => _updateStart(entry, controller.text),
+                          keyboardType: TextInputType.datetime,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -487,7 +500,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _reassignSequentialStarts(entries);
     final updated = DaySchedule.fromEntries(entries);
     await controller.updateSchedule(updated);
-    await persistSchedule(updated, _prefs);
+    await persistScheduleToFile(updated, _prefs, _musicDirectory);
     if (mounted) {
       setState(() {});
     }
@@ -504,7 +517,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _reassignSequentialStarts(entries);
     final updated = DaySchedule.fromEntries(entries);
     await controller.updateSchedule(updated);
-    await persistSchedule(updated, _prefs);
+    await persistScheduleToFile(updated, _prefs, _musicDirectory);
     if (mounted) {
       setState(() {});
     }
@@ -534,7 +547,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
           .toList();
       final updated = DaySchedule.fromEntries(entries);
       await controller.updateSchedule(updated);
-      await persistSchedule(updated, _prefs);
+      await persistScheduleToFile(updated, _prefs, _musicDirectory);
       if (mounted) {
         setState(() {});
       }
@@ -543,10 +556,37 @@ class _HomePageState extends State<HomePage> with WindowListener {
     }
   }
 
+  void _syncStartControllers(DaySchedule schedule) {
+    final expectedFiles = schedule.entries.map((e) => e.file).toSet();
+    final staleKeys = _startControllers.keys.where((k) => !expectedFiles.contains(k)).toList();
+    for (final key in staleKeys) {
+      _startControllers.remove(key)?.dispose();
+      _startFocusNodes.remove(key)?.dispose();
+    }
+
+    for (final entry in schedule.entries) {
+      final controller = _startControllers.putIfAbsent(
+        entry.file,
+        () => TextEditingController(text: _formatMinutesSeconds(entry.startSec)),
+      );
+      final focusNode = _startFocusNodes.putIfAbsent(entry.file, () => FocusNode());
+      final expected = _formatMinutesSeconds(entry.startSec);
+      if (!focusNode.hasFocus && controller.text != expected) {
+        controller.text = expected;
+      }
+    }
+  }
+
   void _showParseError() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Enter start time as mm:ss')),
     );
+  }
+
+  String _formatMinutesSeconds(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
   void _reassignSequentialStarts(List<ScheduleEntry> entries) {

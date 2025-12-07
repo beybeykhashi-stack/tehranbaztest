@@ -7,6 +7,8 @@ import 'package:path/path.dart' as p;
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+const _kScheduleFileName = '.chronoplayer_schedule.json';
+
 class ScheduleEntry {
   ScheduleEntry({
     required this.startSec,
@@ -120,24 +122,7 @@ Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences 
     throw StateError('Music folder not found: $folderPath');
   }
 
-  final stored = prefs.getString('custom_schedule');
-  final storedMap = <String, int>{};
-  if (stored != null && stored.isNotEmpty) {
-    try {
-      final List<dynamic> jsonList = json.decode(stored) as List<dynamic>;
-      for (final item in jsonList) {
-        if (item is Map<String, dynamic>) {
-          final file = item['file'] as String?;
-          final start = item['startSec'] as int?;
-          if (file != null && start != null) {
-            storedMap[file] = start;
-          }
-        }
-      }
-    } catch (e, st) {
-      log('Failed to parse stored schedule: $e', stackTrace: st);
-    }
-  }
+  final storedMap = await _loadStoredStartTimes(folderPath, prefs);
 
   final files = directory
       .listSync()
@@ -170,6 +155,64 @@ Future<void> persistSchedule(DaySchedule schedule, SharedPreferences prefs) asyn
       .map((entry) => {'file': p.basename(entry.file), 'startSec': entry.startSec})
       .toList();
   await prefs.setString('custom_schedule', json.encode(jsonList));
+}
+
+Future<Map<String, int>> _loadStoredStartTimes(String folderPath, SharedPreferences prefs) async {
+  final storedMap = <String, int>{};
+
+  final file = _scheduleFileFor(folderPath);
+  if (file.existsSync()) {
+    try {
+      final raw = await file.readAsString();
+      final List<dynamic> jsonList = json.decode(raw) as List<dynamic>;
+      _parseStartsInto(jsonList, storedMap);
+    } catch (e, st) {
+      log('Failed to parse persisted schedule: $e', stackTrace: st);
+    }
+  }
+
+  final stored = prefs.getString('custom_schedule');
+  if (stored != null && stored.isNotEmpty && storedMap.isEmpty) {
+    try {
+      final List<dynamic> jsonList = json.decode(stored) as List<dynamic>;
+      _parseStartsInto(jsonList, storedMap);
+    } catch (e, st) {
+      log('Failed to parse stored schedule: $e', stackTrace: st);
+    }
+  }
+
+  return storedMap;
+}
+
+void _parseStartsInto(List<dynamic> jsonList, Map<String, int> target) {
+  for (final item in jsonList) {
+    if (item is Map<String, dynamic>) {
+      final file = item['file'] as String?;
+      final start = item['startSec'] as int?;
+      if (file != null && start != null) {
+        target[file] = start;
+      }
+    }
+  }
+}
+
+File _scheduleFileFor(String folderPath) => File(p.join(folderPath, _kScheduleFileName));
+
+Future<void> persistScheduleToFile(
+  DaySchedule schedule,
+  SharedPreferences prefs,
+  String folderPath,
+) async {
+  await persistSchedule(schedule, prefs);
+  final file = _scheduleFileFor(folderPath);
+  final jsonList = schedule.entries
+      .map((entry) => {'file': p.basename(entry.file), 'startSec': entry.startSec})
+      .toList();
+  try {
+    await file.writeAsString(json.encode(jsonList), flush: true);
+  } catch (e, st) {
+    log('Failed to persist schedule file: $e', stackTrace: st);
+  }
 }
 
 Future<DaySchedule> loadScheduleFromAssets(String path) async {
