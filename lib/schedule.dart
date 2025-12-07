@@ -1,7 +1,13 @@
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:path/path.dart' as p;
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+const _kScheduleFileName = '.chronoplayer_schedule.json';
 
 class ScheduleEntry {
   ScheduleEntry({
@@ -13,6 +19,14 @@ class ScheduleEntry {
   final int startSec; // seconds from midnight
   final String file;
   final bool loopWithinSlot;
+
+  ScheduleEntry copyWith({int? startSec, String? file, bool? loopWithinSlot}) {
+    return ScheduleEntry(
+      startSec: startSec ?? this.startSec,
+      file: file ?? this.file,
+      loopWithinSlot: loopWithinSlot ?? this.loopWithinSlot,
+    );
+  }
 
   String get startLabel => _formatTime(startSec);
 
@@ -31,6 +45,12 @@ class DaySchedule {
   DaySchedule(this.entries);
 
   final List<ScheduleEntry> entries;
+
+  factory DaySchedule.fromEntries(List<ScheduleEntry> entries) {
+    final copy = [...entries];
+    copy.sort((a, b) => a.startSec.compareTo(b.startSec));
+    return DaySchedule(copy);
+  }
 
   /// Returns the index of the entry that should be active for [nowSec].
   /// Slots are [start_i, start_{i+1}) with wrap at 24h.
@@ -94,6 +114,105 @@ class DaySchedule {
   ScheduleEntry operator [](int index) => entries[index];
 
   static const secondsPerDay = 24 * 60 * 60;
+}
+
+Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences prefs) async {
+  final directory = Directory(folderPath);
+  if (!directory.existsSync()) {
+    throw StateError('Music folder not found: $folderPath');
+  }
+
+  final storedMap = await _loadStoredStartTimes(folderPath, prefs);
+
+  final files = directory
+      .listSync()
+      .whereType<File>()
+      .where((file) {
+        final lower = file.path.toLowerCase();
+        return lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.flac');
+      })
+      .toList()
+    ..sort((a, b) => a.path.compareTo(b.path));
+
+  if (files.isEmpty) {
+    throw StateError('No audio files found in $folderPath');
+  }
+
+  final entries = <ScheduleEntry>[];
+  final step = (DaySchedule.secondsPerDay ~/ files.length).clamp(1, DaySchedule.secondsPerDay);
+  for (var i = 0; i < files.length; i++) {
+    final file = files[i];
+    final name = p.basename(file.path);
+    final start = storedMap[name] ?? (i == 0 ? 0 : (step * i).clamp(0, DaySchedule.secondsPerDay - 1));
+    entries.add(ScheduleEntry(startSec: start, file: file.path, loopWithinSlot: true));
+  }
+
+  return DaySchedule.fromEntries(entries);
+}
+
+Future<void> persistSchedule(DaySchedule schedule, SharedPreferences prefs) async {
+  final jsonList = schedule.entries
+      .map((entry) => {'file': p.basename(entry.file), 'startSec': entry.startSec})
+      .toList();
+  await prefs.setString('custom_schedule', json.encode(jsonList));
+}
+
+Future<Map<String, int>> _loadStoredStartTimes(String folderPath, SharedPreferences prefs) async {
+  final storedMap = <String, int>{};
+
+  final file = _scheduleFileFor(folderPath);
+  if (file.existsSync()) {
+    try {
+      final raw = await file.readAsString();
+      final List<dynamic> jsonList = json.decode(raw) as List<dynamic>;
+      _parseStartsInto(jsonList, storedMap);
+    } catch (e, st) {
+      log('Failed to parse persisted schedule: $e', stackTrace: st);
+    }
+  }
+
+  final stored = prefs.getString('custom_schedule');
+  if (stored != null && stored.isNotEmpty && storedMap.isEmpty) {
+    try {
+      final List<dynamic> jsonList = json.decode(stored) as List<dynamic>;
+      _parseStartsInto(jsonList, storedMap);
+    } catch (e, st) {
+      log('Failed to parse stored schedule: $e', stackTrace: st);
+    }
+  }
+
+  return storedMap;
+}
+
+void _parseStartsInto(List<dynamic> jsonList, Map<String, int> target) {
+  for (final item in jsonList) {
+    if (item is Map<String, dynamic>) {
+      final file = item['file'] as String?;
+      final start = item['startSec'] as int?;
+      if (file != null && start != null) {
+        target[file] = start;
+      }
+    }
+  }
+}
+
+File _scheduleFileFor(String folderPath) => File(p.join(folderPath, _kScheduleFileName));
+
+Future<void> persistScheduleToFile(
+  DaySchedule schedule,
+  SharedPreferences prefs,
+  String folderPath,
+) async {
+  await persistSchedule(schedule, prefs);
+  final file = _scheduleFileFor(folderPath);
+  final jsonList = schedule.entries
+      .map((entry) => {'file': p.basename(entry.file), 'startSec': entry.startSec})
+      .toList();
+  try {
+    await file.writeAsString(json.encode(jsonList), flush: true);
+  } catch (e, st) {
+    log('Failed to persist schedule file: $e', stackTrace: st);
+  }
 }
 
 Future<DaySchedule> loadScheduleFromAssets(String path) async {

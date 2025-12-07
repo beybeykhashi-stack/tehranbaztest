@@ -24,9 +24,12 @@ const _kTrayIconPngBase64 =
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await MediaKit.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  final defaultMusicDir = p.join(Directory.current.path, 'assets', 'audio');
+  final musicDirectory = prefs.getString('music_directory') ?? defaultMusicDir;
   DaySchedule schedule;
   try {
-    schedule = await loadScheduleFromAssets('assets/schedule.json');
+    schedule = await loadScheduleFromFolder(musicDirectory, prefs);
   } catch (error, stack) {
     runApp(_ErrorApp(message: 'Failed to load schedule: $error'));
     debugPrint('Schedule error: $error\n$stack');
@@ -47,13 +50,15 @@ Future<void> main() async {
     }
   });
 
-  runApp(ChronoApp(schedule: schedule));
+  runApp(ChronoApp(schedule: schedule, prefs: prefs, musicDirectory: musicDirectory));
 }
 
 class ChronoApp extends StatelessWidget {
-  const ChronoApp({super.key, required this.schedule});
+  const ChronoApp({super.key, required this.schedule, required this.prefs, required this.musicDirectory});
 
   final DaySchedule schedule;
+  final SharedPreferences prefs;
+  final String musicDirectory;
 
   @override
   Widget build(BuildContext context) {
@@ -67,14 +72,17 @@ class ChronoApp extends StatelessWidget {
           useMaterial3: true,
         ),
         debugShowCheckedModeBanner: false,
-        home: const HomePage(),
+        home: HomePage(prefs: prefs, initialDirectory: musicDirectory),
       ),
     );
   }
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, required this.prefs, required this.initialDirectory});
+
+  final SharedPreferences prefs;
+  final String initialDirectory;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -83,7 +91,12 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WindowListener {
   StreamSubscription<DateTime>? _tickSubscription;
   late final DateFormat _timeFormat;
-  SharedPreferences? _prefs;
+  late SharedPreferences _prefs;
+  DateTime _now = DateTime.now();
+  late String _musicDirectory;
+  final TextEditingController _folderController = TextEditingController();
+  final Map<String, TextEditingController> _startControllers = {};
+  final Map<String, FocusNode> _startFocusNodes = {};
 
   final SystemTray _systemTray = SystemTray();
   final Menu _trayMenu = Menu();
@@ -94,13 +107,15 @@ class _HomePageState extends State<HomePage> with WindowListener {
     super.initState();
     _timeFormat = DateFormat('HH:mm:ss');
     windowManager.addListener(this);
+    _musicDirectory = widget.initialDirectory;
+    _folderController.text = _musicDirectory;
     WidgetsBinding.instance.addPostFrameCallback((_) => _initialize());
   }
 
   Future<void> _initialize() async {
     final controller = context.read<PlayerController>();
-    _prefs = await SharedPreferences.getInstance();
-    final storedVolume = _prefs?.getDouble('volume');
+    _prefs = widget.prefs;
+    final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
       await controller.setVolume(storedVolume);
     }
@@ -108,7 +123,9 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _tickSubscription = alignedSecondTicks().listen((now) {
       controller.resyncIfDrifted(now);
       if (mounted) {
-        setState(() {});
+        setState(() {
+          _now = now;
+        });
       }
     });
     await _setupTray();
@@ -123,7 +140,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     );
     await _trayMenu.buildFrom([
       MenuItemLabel(label: 'Play/Pause', onClicked: (_) async => await _trayToggle()),
-      MenuItemLabel(label: 'Next Track', onClicked: (_) async => await _trayNext()),
       MenuItemLabel(label: 'Show/Hide', onClicked: (_) async => await _trayToggleWindow()),
       const MenuSeparator(),
       MenuItemLabel(label: 'Quit', onClicked: (_) async => await _trayQuit()),
@@ -151,10 +167,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     await context.read<PlayerController>().toggle();
   }
 
-  Future<void> _trayNext() async {
-    await context.read<PlayerController>().next();
-  }
-
   Future<void> _trayToggleWindow() async {
     final isVisible = await windowManager.isVisible();
     if (isVisible) {
@@ -178,6 +190,13 @@ class _HomePageState extends State<HomePage> with WindowListener {
   void dispose() {
     windowManager.removeListener(this);
     _tickSubscription?.cancel();
+    _folderController.dispose();
+    for (final controller in _startControllers.values) {
+      controller.dispose();
+    }
+    for (final node in _startFocusNodes.values) {
+      node.dispose();
+    }
     unawaited(_systemTray.destroy());
     super.dispose();
   }
@@ -195,7 +214,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
   Widget build(BuildContext context) {
     final controller = context.watch<PlayerController>();
     final schedule = controller.schedule;
-    final now = DateTime.now();
+    final now = _now;
     final nowSec = nowSecondsOfDay(now);
     final currentIndex = schedule.indexForSecond(nowSec);
     final current = schedule[currentIndex];
@@ -238,40 +257,85 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Widget _buildScheduleList(DaySchedule schedule, int currentIndex) {
+    _syncStartControllers(schedule);
     return SizedBox(
       width: 320,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              'Schedule',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Schedule',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _folderController,
+                  decoration: InputDecoration(
+                    labelText: 'Music folder',
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _reloadFromFolder,
+                    ),
+                  ),
+                  onSubmitted: (_) => _reloadFromFolder(),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: 'Sort by name',
+                      onPressed: () => _sortSchedule(byName: true),
+                      icon: const Icon(Icons.sort_by_alpha),
+                    ),
+                    IconButton(
+                      tooltip: 'Sort by start time',
+                      onPressed: () => _sortSchedule(byName: false),
+                      icon: const Icon(Icons.access_time),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
           Expanded(
-            child: ListView.builder(
+            child: ReorderableListView.builder(
               itemCount: schedule.entries.length,
+              onReorder: _reorderEntries,
               itemBuilder: (context, index) {
                 final entry = schedule.entries[index];
                 final isCurrent = index == currentIndex;
+                final controller = _startControllers[entry.file]!;
+                final focusNode = _startFocusNodes[entry.file]!;
                 return Container(
+                  key: ValueKey(entry.file),
                   color: isCurrent ? Colors.white10 : Colors.transparent,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
-                      Text(
-                        _formatTime(entry.startSec),
-                        style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
+                      SizedBox(
+                        width: 70,
+                        child: TextField(
+                          controller: controller,
+                          focusNode: focusNode,
+                          decoration: const InputDecoration(labelText: 'mm:ss'),
+                          onSubmitted: (value) => _updateStart(entry, value),
+                          onEditingComplete: () => _updateStart(entry, controller.text),
+                          keyboardType: TextInputType.datetime,
+                        ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          entry.file,
+                          p.basename(entry.file),
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      const Icon(Icons.drag_indicator),
                     ],
                   ),
                 );
@@ -349,10 +413,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
                 onPressed: () => controller.toggle(),
                 child: Text(controller.playing ? 'Pause' : 'Play'),
               ),
-              ElevatedButton(
-                onPressed: () => controller.next(),
-                child: const Text('Next'),
-              ),
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -363,7 +423,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
                       value: controller.volume,
                       onChanged: (value) async {
                         await controller.setVolume(value);
-                        await _prefs?.setDouble('volume', controller.volume);
+                        await _prefs.setDouble('volume', controller.volume);
                         if (mounted) {
                           setState(() {});
                         }
@@ -382,10 +442,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
             style: TextStyle(color: Colors.white.withOpacity(0.6)),
           ),
           const Spacer(),
-          Text(
-            'Tip: Drop your MP3 files into assets/audio and update assets/schedule.json to cover 24 hours.',
-            style: TextStyle(color: Colors.white.withOpacity(0.5)),
-          ),
         ],
       ),
     );
@@ -409,6 +465,137 @@ class _HomePageState extends State<HomePage> with WindowListener {
       return '${m}m ${s}s';
     }
     return '${s}s';
+  }
+
+  Future<void> _reloadFromFolder() async {
+    try {
+      final newDirectory = _folderController.text.trim();
+      if (newDirectory.isEmpty) {
+        return;
+      }
+      _musicDirectory = newDirectory;
+      await _prefs.setString('music_directory', _musicDirectory);
+      final schedule = await loadScheduleFromFolder(_musicDirectory, _prefs);
+      await context.read<PlayerController>().updateSchedule(schedule);
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load folder: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _sortSchedule({required bool byName}) async {
+    final controller = context.read<PlayerController>();
+    final entries = [...controller.schedule.entries];
+    if (byName) {
+      entries.sort((a, b) => p.basename(a.file).compareTo(p.basename(b.file)));
+    } else {
+      entries.sort((a, b) => a.startSec.compareTo(b.startSec));
+    }
+    _reassignSequentialStarts(entries);
+    final updated = DaySchedule.fromEntries(entries);
+    await controller.updateSchedule(updated);
+    await persistScheduleToFile(updated, _prefs, _musicDirectory);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _reorderEntries(int oldIndex, int newIndex) async {
+    final controller = context.read<PlayerController>();
+    final entries = [...controller.schedule.entries];
+    if (newIndex > oldIndex) {
+      newIndex -= 1;
+    }
+    final item = entries.removeAt(oldIndex);
+    entries.insert(newIndex, item);
+    _reassignSequentialStarts(entries);
+    final updated = DaySchedule.fromEntries(entries);
+    await controller.updateSchedule(updated);
+    await persistScheduleToFile(updated, _prefs, _musicDirectory);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _updateStart(ScheduleEntry entry, String value) async {
+    final parts = value.split(':').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
+    if (parts.length != 2) {
+      _showParseError();
+      return;
+    }
+    try {
+      final minutes = int.parse(parts[0]);
+      final seconds = int.parse(parts[1]);
+      if (minutes < 0 || seconds < 0 || seconds > 59) {
+        _showParseError();
+        return;
+      }
+      final start = minutes * 60 + seconds;
+      if (start >= DaySchedule.secondsPerDay) {
+        _showParseError();
+        return;
+      }
+      final controller = context.read<PlayerController>();
+      final entries = controller.schedule.entries
+          .map((e) => e == entry ? e.copyWith(startSec: start) : e)
+          .toList();
+      final updated = DaySchedule.fromEntries(entries);
+      await controller.updateSchedule(updated);
+      await persistScheduleToFile(updated, _prefs, _musicDirectory);
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (_) {
+      _showParseError();
+    }
+  }
+
+  void _syncStartControllers(DaySchedule schedule) {
+    final expectedFiles = schedule.entries.map((e) => e.file).toSet();
+    final staleKeys = _startControllers.keys.where((k) => !expectedFiles.contains(k)).toList();
+    for (final key in staleKeys) {
+      _startControllers.remove(key)?.dispose();
+      _startFocusNodes.remove(key)?.dispose();
+    }
+
+    for (final entry in schedule.entries) {
+      final controller = _startControllers.putIfAbsent(
+        entry.file,
+        () => TextEditingController(text: _formatMinutesSeconds(entry.startSec)),
+      );
+      final focusNode = _startFocusNodes.putIfAbsent(entry.file, () => FocusNode());
+      final expected = _formatMinutesSeconds(entry.startSec);
+      if (!focusNode.hasFocus && controller.text != expected) {
+        controller.text = expected;
+      }
+    }
+  }
+
+  void _showParseError() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Enter start time as mm:ss')),
+    );
+  }
+
+  String _formatMinutesSeconds(int seconds) {
+    final minutes = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
+
+  void _reassignSequentialStarts(List<ScheduleEntry> entries) {
+    if (entries.isEmpty) return;
+    final step = (DaySchedule.secondsPerDay ~/ entries.length).clamp(1, DaySchedule.secondsPerDay);
+    for (var i = 0; i < entries.length; i++) {
+      final newStart = i == 0 ? 0 : (step * i).clamp(0, DaySchedule.secondsPerDay - 1);
+      entries[i] = entries[i].copyWith(startSec: newStart);
+    }
   }
 }
 
