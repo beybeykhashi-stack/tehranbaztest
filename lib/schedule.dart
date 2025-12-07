@@ -1,7 +1,11 @@
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:path/path.dart' as p;
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ScheduleEntry {
   ScheduleEntry({
@@ -13,6 +17,14 @@ class ScheduleEntry {
   final int startSec; // seconds from midnight
   final String file;
   final bool loopWithinSlot;
+
+  ScheduleEntry copyWith({int? startSec, String? file, bool? loopWithinSlot}) {
+    return ScheduleEntry(
+      startSec: startSec ?? this.startSec,
+      file: file ?? this.file,
+      loopWithinSlot: loopWithinSlot ?? this.loopWithinSlot,
+    );
+  }
 
   String get startLabel => _formatTime(startSec);
 
@@ -31,6 +43,12 @@ class DaySchedule {
   DaySchedule(this.entries);
 
   final List<ScheduleEntry> entries;
+
+  factory DaySchedule.fromEntries(List<ScheduleEntry> entries) {
+    final copy = [...entries];
+    copy.sort((a, b) => a.startSec.compareTo(b.startSec));
+    return DaySchedule(copy);
+  }
 
   /// Returns the index of the entry that should be active for [nowSec].
   /// Slots are [start_i, start_{i+1}) with wrap at 24h.
@@ -94,6 +112,64 @@ class DaySchedule {
   ScheduleEntry operator [](int index) => entries[index];
 
   static const secondsPerDay = 24 * 60 * 60;
+}
+
+Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences prefs) async {
+  final directory = Directory(folderPath);
+  if (!directory.existsSync()) {
+    throw StateError('Music folder not found: $folderPath');
+  }
+
+  final stored = prefs.getString('custom_schedule');
+  final storedMap = <String, int>{};
+  if (stored != null && stored.isNotEmpty) {
+    try {
+      final List<dynamic> jsonList = json.decode(stored) as List<dynamic>;
+      for (final item in jsonList) {
+        if (item is Map<String, dynamic>) {
+          final file = item['file'] as String?;
+          final start = item['startSec'] as int?;
+          if (file != null && start != null) {
+            storedMap[file] = start;
+          }
+        }
+      }
+    } catch (e, st) {
+      log('Failed to parse stored schedule: $e', stackTrace: st);
+    }
+  }
+
+  final files = directory
+      .listSync()
+      .whereType<File>()
+      .where((file) {
+        final lower = file.path.toLowerCase();
+        return lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.flac');
+      })
+      .toList()
+    ..sort((a, b) => a.path.compareTo(b.path));
+
+  if (files.isEmpty) {
+    throw StateError('No audio files found in $folderPath');
+  }
+
+  final entries = <ScheduleEntry>[];
+  final step = (DaySchedule.secondsPerDay ~/ files.length).clamp(1, DaySchedule.secondsPerDay);
+  for (var i = 0; i < files.length; i++) {
+    final file = files[i];
+    final name = p.basename(file.path);
+    final start = storedMap[name] ?? (i == 0 ? 0 : (step * i).clamp(0, DaySchedule.secondsPerDay - 1));
+    entries.add(ScheduleEntry(startSec: start, file: file.path, loopWithinSlot: true));
+  }
+
+  return DaySchedule.fromEntries(entries);
+}
+
+Future<void> persistSchedule(DaySchedule schedule, SharedPreferences prefs) async {
+  final jsonList = schedule.entries
+      .map((entry) => {'file': p.basename(entry.file), 'startSec': entry.startSec})
+      .toList();
+  await prefs.setString('custom_schedule', json.encode(jsonList));
 }
 
 Future<DaySchedule> loadScheduleFromAssets(String path) async {

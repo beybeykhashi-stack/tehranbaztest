@@ -29,7 +29,7 @@ class PlayerController extends ChangeNotifier {
     });
   }
 
-  final DaySchedule schedule;
+  DaySchedule schedule;
   late final Player _player;
   late final StreamSubscription<Duration> _positionSubscription;
 
@@ -80,6 +80,13 @@ class PlayerController extends ChangeNotifier {
     final nowSec = nowSecondsOfDay(now);
     final index = schedule.indexForSecond(nowSec);
     await _playIndex(index, nowSec: nowSec);
+  }
+
+  Future<void> updateSchedule(DaySchedule newSchedule) async {
+    schedule = newSchedule;
+    final nowSec = nowSecondsOfDay(DateTime.now());
+    currentIndex = schedule.indexForSecond(nowSec);
+    await _playIndex(currentIndex, nowSec: nowSec);
   }
 
   Future<void> resyncIfDrifted(DateTime now) async {
