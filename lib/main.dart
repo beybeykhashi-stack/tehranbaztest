@@ -23,7 +23,7 @@ const _kTrayIconPngBase64 =
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await MediaKit.ensureInitialized();
+   MediaKit.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
   final defaultMusicDir = p.join(Directory.current.path, 'assets', 'audio');
   final musicDirectory = prefs.getString('music_directory') ?? defaultMusicDir;
@@ -172,11 +172,8 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Future<void> _initialize() async {
-    final controller = Provider.maybeOf<PlayerController>(context, listen: false);
-    if (controller == null) {
-      debugPrint('HomePage requires a PlayerController provider; skipping init.');
-      return;
-    }
+    final controller = context.read<PlayerController>();
+
     _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
@@ -204,7 +201,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
     await _trayMenu.buildFrom([
       MenuItemLabel(label: 'Play/Pause', onClicked: (_) async => await _trayToggle()),
       MenuItemLabel(label: 'Show/Hide', onClicked: (_) async => await _trayToggleWindow()),
-      const MenuSeparator(),
+       MenuSeparator(),
       MenuItemLabel(label: 'Quit', onClicked: (_) async => await _trayQuit()),
     ]);
     await _systemTray.setContextMenu(_trayMenu);
