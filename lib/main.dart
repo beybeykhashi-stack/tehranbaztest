@@ -27,14 +27,6 @@ Future<void> main() async {
   final prefs = await SharedPreferences.getInstance();
   final defaultMusicDir = p.join(Directory.current.path, 'assets', 'audio');
   final musicDirectory = prefs.getString('music_directory') ?? defaultMusicDir;
-  DaySchedule schedule;
-  try {
-    schedule = await loadScheduleFromFolder(musicDirectory, prefs);
-  } catch (error, stack) {
-    runApp(_ErrorApp(message: 'Failed to load schedule: $error'));
-    debugPrint('Schedule error: $error\n$stack');
-    return;
-  }
   await windowManager.ensureInitialized();
   const windowOptions = WindowOptions(
     size: Size(980, 620),
@@ -50,7 +42,74 @@ Future<void> main() async {
     }
   });
 
-  runApp(ChronoApp(schedule: schedule, prefs: prefs, musicDirectory: musicDirectory));
+  runApp(ChronoAppLoader(prefs: prefs, musicDirectory: musicDirectory));
+}
+
+class ChronoAppLoader extends StatefulWidget {
+  const ChronoAppLoader({super.key, required this.prefs, required this.musicDirectory});
+
+  final SharedPreferences prefs;
+  final String musicDirectory;
+
+  @override
+  State<ChronoAppLoader> createState() => _ChronoAppLoaderState();
+}
+
+class _ChronoAppLoaderState extends State<ChronoAppLoader> {
+  late Future<DaySchedule> _scheduleFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleFuture = _loadSchedule();
+  }
+
+  Future<DaySchedule> _loadSchedule() async {
+    try {
+      return await loadScheduleFromFolder(widget.musicDirectory, widget.prefs);
+    } catch (error, stack) {
+      debugPrint('Schedule error: $error\n$stack');
+      rethrow;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<DaySchedule>(
+      future: _scheduleFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const MaterialApp(
+            title: _kAppTitle,
+            home: Scaffold(
+              backgroundColor: Colors.black,
+              body: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 12),
+                    Text('Loading schedule…', style: TextStyle(color: Colors.white70)),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
+        if (snapshot.hasError || !snapshot.hasData) {
+          final message = snapshot.error?.toString() ?? 'Unknown schedule error';
+          return _ErrorApp(message: 'Failed to load schedule: $message');
+        }
+
+        return ChronoApp(
+          schedule: snapshot.data!,
+          prefs: widget.prefs,
+          musicDirectory: widget.musicDirectory,
+        );
+      },
+    );
+  }
 }
 
 class ChronoApp extends StatelessWidget {
