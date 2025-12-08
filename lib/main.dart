@@ -172,7 +172,11 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Future<void> _initialize() async {
-    final controller = context.read<PlayerController>();
+    final controller = Provider.maybeOf<PlayerController>(context, listen: false);
+    if (controller == null) {
+      debugPrint('HomePage requires a PlayerController provider; skipping init.');
+      return;
+    }
     _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
@@ -271,7 +275,18 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    final controller = context.watch<PlayerController>();
+    final controller = Provider.maybeOf<PlayerController>(context);
+    if (controller == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF101218),
+        body: Center(
+          child: Text(
+            'No PlayerController found. Wrap HomePage in a ChangeNotifierProvider.',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
     final schedule = controller.schedule;
     final now = _now;
     final nowSec = nowSecondsOfDay(now);
