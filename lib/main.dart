@@ -309,20 +309,21 @@ class _HomePageState extends State<HomePage> with WindowListener {
               itemBuilder: (context, index) {
                 final entry = schedule.entries[index];
                 final isCurrent = index == currentIndex;
-                final controller = _startControllers[entry.file]!;
-                final focusNode = _startFocusNodes[entry.file]!;
+                final entryKey = _entryKey(entry);
+                final controller = _startControllers[entryKey]!;
+                final focusNode = _startFocusNodes[entryKey]!;
                 return Container(
-                  key: ValueKey(entry.file),
+                  key: ValueKey(entryKey),
                   color: isCurrent ? Colors.white10 : Colors.transparent,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
                       SizedBox(
-                        width: 70,
+                        width: 90,
                         child: TextField(
                           controller: controller,
                           focusNode: focusNode,
-                          decoration: const InputDecoration(labelText: 'mm:ss'),
+                          decoration: const InputDecoration(labelText: 'HH:mm:ss'),
                           onSubmitted: (value) => _updateStart(entry, value),
                           onEditingComplete: () => _updateStart(entry, controller.text),
                           keyboardType: TextInputType.datetime,
@@ -492,13 +493,11 @@ class _HomePageState extends State<HomePage> with WindowListener {
   Future<void> _sortSchedule({required bool byName}) async {
     final controller = context.read<PlayerController>();
     final entries = [...controller.schedule.entries];
+    final orderedFiles = entries.map((e) => e.file).toList();
     if (byName) {
-      entries.sort((a, b) => p.basename(a.file).compareTo(p.basename(b.file)));
-    } else {
-      entries.sort((a, b) => a.startSec.compareTo(b.startSec));
+      orderedFiles.sort((a, b) => p.basename(a).compareTo(p.basename(b)));
     }
-    _reassignSequentialStarts(entries);
-    final updated = DaySchedule.fromEntries(entries);
+    final updated = await _buildScheduleForOrder(orderedFiles);
     await controller.updateSchedule(updated);
     await persistScheduleToFile(updated, _prefs, _musicDirectory);
     if (mounted) {
@@ -514,8 +513,8 @@ class _HomePageState extends State<HomePage> with WindowListener {
     }
     final item = entries.removeAt(oldIndex);
     entries.insert(newIndex, item);
-    _reassignSequentialStarts(entries);
-    final updated = DaySchedule.fromEntries(entries);
+    final orderedFiles = entries.map((e) => e.file).toList();
+    final updated = await _buildScheduleForOrder(orderedFiles);
     await controller.updateSchedule(updated);
     await persistScheduleToFile(updated, _prefs, _musicDirectory);
     if (mounted) {
@@ -525,18 +524,19 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   Future<void> _updateStart(ScheduleEntry entry, String value) async {
     final parts = value.split(':').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
-    if (parts.length != 2) {
+    if (parts.length != 3) {
       _showParseError();
       return;
     }
     try {
-      final minutes = int.parse(parts[0]);
-      final seconds = int.parse(parts[1]);
-      if (minutes < 0 || seconds < 0 || seconds > 59) {
+      final hours = int.parse(parts[0]);
+      final minutes = int.parse(parts[1]);
+      final seconds = int.parse(parts[2]);
+      if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) {
         _showParseError();
         return;
       }
-      final start = minutes * 60 + seconds;
+      final start = hours * 3600 + minutes * 60 + seconds;
       if (start >= DaySchedule.secondsPerDay) {
         _showParseError();
         return;
@@ -556,21 +556,26 @@ class _HomePageState extends State<HomePage> with WindowListener {
     }
   }
 
+  Future<DaySchedule> _buildScheduleForOrder(List<String> orderedFiles) async {
+    return buildSequentialSchedule(orderedFiles);
+  }
+
   void _syncStartControllers(DaySchedule schedule) {
-    final expectedFiles = schedule.entries.map((e) => e.file).toSet();
-    final staleKeys = _startControllers.keys.where((k) => !expectedFiles.contains(k)).toList();
+    final expectedKeys = schedule.entries.map(_entryKey).toSet();
+    final staleKeys = _startControllers.keys.where((k) => !expectedKeys.contains(k)).toList();
     for (final key in staleKeys) {
       _startControllers.remove(key)?.dispose();
       _startFocusNodes.remove(key)?.dispose();
     }
 
     for (final entry in schedule.entries) {
+      final key = _entryKey(entry);
       final controller = _startControllers.putIfAbsent(
-        entry.file,
-        () => TextEditingController(text: _formatMinutesSeconds(entry.startSec)),
+        key,
+        () => TextEditingController(text: _formatHoursMinutesSeconds(entry.startSec)),
       );
-      final focusNode = _startFocusNodes.putIfAbsent(entry.file, () => FocusNode());
-      final expected = _formatMinutesSeconds(entry.startSec);
+      final focusNode = _startFocusNodes.putIfAbsent(key, () => FocusNode());
+      final expected = _formatHoursMinutesSeconds(entry.startSec);
       if (!focusNode.hasFocus && controller.text != expected) {
         controller.text = expected;
       }
@@ -579,24 +584,18 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   void _showParseError() {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Enter start time as mm:ss')),
+      const SnackBar(content: Text('Enter start time as HH:mm:ss')),
     );
   }
 
-  String _formatMinutesSeconds(int seconds) {
-    final minutes = seconds ~/ 60;
+  String _formatHoursMinutesSeconds(int seconds) {
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
     final secs = seconds % 60;
-    return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+    return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
-  void _reassignSequentialStarts(List<ScheduleEntry> entries) {
-    if (entries.isEmpty) return;
-    final step = (DaySchedule.secondsPerDay ~/ entries.length).clamp(1, DaySchedule.secondsPerDay);
-    for (var i = 0; i < entries.length; i++) {
-      final newStart = i == 0 ? 0 : (step * i).clamp(0, DaySchedule.secondsPerDay - 1);
-      entries[i] = entries[i].copyWith(startSec: newStart);
-    }
-  }
+  String _entryKey(ScheduleEntry entry) => '${entry.file}|${entry.startSec}';
 }
 
 class _ErrorApp extends StatelessWidget {
