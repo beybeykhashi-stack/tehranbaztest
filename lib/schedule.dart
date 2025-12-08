@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -122,8 +123,6 @@ Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences 
     throw StateError('Music folder not found: $folderPath');
   }
 
-  final storedMap = await _loadStoredStartTimes(folderPath, prefs);
-
   final files = directory
       .listSync()
       .whereType<File>()
@@ -138,16 +137,10 @@ Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences 
     throw StateError('No audio files found in $folderPath');
   }
 
-  final entries = <ScheduleEntry>[];
-  final step = (DaySchedule.secondsPerDay ~/ files.length).clamp(1, DaySchedule.secondsPerDay);
-  for (var i = 0; i < files.length; i++) {
-    final file = files[i];
-    final name = p.basename(file.path);
-    final start = storedMap[name] ?? (i == 0 ? 0 : (step * i).clamp(0, DaySchedule.secondsPerDay - 1));
-    entries.add(ScheduleEntry(startSec: start, file: file.path, loopWithinSlot: true));
-  }
-
-  return DaySchedule.fromEntries(entries);
+  final orderedFiles = files.map((f) => f.path).toList();
+  final schedule = await buildSequentialSchedule(orderedFiles);
+  await persistScheduleToFile(schedule, prefs, folderPath);
+  return schedule;
 }
 
 Future<void> persistSchedule(DaySchedule schedule, SharedPreferences prefs) async {
@@ -157,46 +150,90 @@ Future<void> persistSchedule(DaySchedule schedule, SharedPreferences prefs) asyn
   await prefs.setString('custom_schedule', json.encode(jsonList));
 }
 
-Future<Map<String, int>> _loadStoredStartTimes(String folderPath, SharedPreferences prefs) async {
-  final storedMap = <String, int>{};
-
-  final file = _scheduleFileFor(folderPath);
-  if (file.existsSync()) {
-    try {
-      final raw = await file.readAsString();
-      final List<dynamic> jsonList = json.decode(raw) as List<dynamic>;
-      _parseStartsInto(jsonList, storedMap);
-    } catch (e, st) {
-      log('Failed to parse persisted schedule: $e', stackTrace: st);
-    }
+Future<DaySchedule> buildSequentialSchedule(List<String> orderedFiles) async {
+  final existingFiles = orderedFiles.map(File.new).where((f) => f.existsSync()).toList();
+  if (existingFiles.isEmpty) {
+    throw StateError('No audio files found in the requested order.');
   }
 
-  final stored = prefs.getString('custom_schedule');
-  if (stored != null && stored.isNotEmpty && storedMap.isEmpty) {
-    try {
-      final List<dynamic> jsonList = json.decode(stored) as List<dynamic>;
-      _parseStartsInto(jsonList, storedMap);
-    } catch (e, st) {
-      log('Failed to parse stored schedule: $e', stackTrace: st);
-    }
+  final durations = await _probeDurations(existingFiles.map((f) => f.path).toList());
+  if (durations.isEmpty) {
+    throw StateError('Unable to determine durations for any audio files.');
   }
 
-  return storedMap;
-}
-
-void _parseStartsInto(List<dynamic> jsonList, Map<String, int> target) {
-  for (final item in jsonList) {
-    if (item is Map<String, dynamic>) {
-      final file = item['file'] as String?;
-      final start = item['startSec'] as int?;
-      if (file != null && start != null) {
-        target[file] = start;
+  final entries = <ScheduleEntry>[];
+  var cursor = 0;
+  while (cursor < DaySchedule.secondsPerDay) {
+    for (final file in existingFiles) {
+      entries.add(ScheduleEntry(startSec: cursor, file: file.path, loopWithinSlot: false));
+      final duration = (durations[file.path] ?? 1).clamp(1, DaySchedule.secondsPerDay) as int;
+      cursor += duration;
+      if (cursor >= DaySchedule.secondsPerDay) {
+        break;
       }
     }
   }
+
+  return DaySchedule.fromEntries(entries);
 }
 
 File _scheduleFileFor(String folderPath) => File(p.join(folderPath, _kScheduleFileName));
+
+Future<Map<String, int>> _probeDurations(List<String> filePaths) async {
+  final durations = <String, int>{};
+  final player = Player(configuration: const PlayerConfiguration());
+  try {
+    for (final path in filePaths) {
+      final media = await _resolveMedia(path);
+      if (media == null) {
+        log('Unable to resolve media for $path');
+        continue;
+      }
+      try {
+        await player.open(media, play: false);
+        final duration = await player.stream.duration.firstWhere(
+          (d) => d != Duration.zero,
+          orElse: () => Duration.zero,
+        ).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => Duration.zero,
+        );
+        await player.stop();
+        if (duration == Duration.zero) {
+          log('Unable to read duration for $path, using 1 second as fallback');
+          durations[path] = 1;
+        } else {
+          durations[path] = duration.inSeconds;
+        }
+      } catch (e, st) {
+        log('Failed to load $path: $e', stackTrace: st);
+      }
+    }
+  } finally {
+    await player.dispose();
+  }
+  return durations;
+}
+
+Future<Media?> _resolveMedia(String path) async {
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return Media(path);
+  }
+  if (path.startsWith('asset://')) {
+    return Media(path);
+  }
+  try {
+    await rootBundle.load(path);
+    final normalized = path.startsWith('/') ? path.substring(1) : path;
+    return Media('asset:///$normalized');
+  } catch (_) {
+    final file = File(path);
+    if (file.existsSync()) {
+      return Media(p.toUri(file.absolute.path).toString());
+    }
+  }
+  return null;
+}
 
 Future<void> persistScheduleToFile(
   DaySchedule schedule,
