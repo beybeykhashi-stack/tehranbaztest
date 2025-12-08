@@ -275,7 +275,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    final controller = Provider.maybeOf<PlayerController>(context);
+    final controller = _maybeController(context);
     if (controller == null) {
       return const Scaffold(
         backgroundColor: Color(0xFF101218),
@@ -328,6 +328,14 @@ class _HomePageState extends State<HomePage> with WindowListener {
         ),
       ),
     );
+  }
+
+  PlayerController? _maybeController(BuildContext context) {
+    try {
+      return context.watch<PlayerController>();
+    } on ProviderNotFoundException {
+      return null;
+    }
   }
 
   Widget _buildScheduleList(DaySchedule schedule, int currentIndex) {
