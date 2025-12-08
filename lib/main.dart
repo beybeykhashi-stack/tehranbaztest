@@ -138,10 +138,10 @@ class ChronoApp extends StatelessWidget {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.prefs, required this.initialDirectory});
+  const HomePage({super.key, this.prefs, this.initialDirectory});
 
-  final SharedPreferences prefs;
-  final String initialDirectory;
+  final SharedPreferences? prefs;
+  final String? initialDirectory;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -166,14 +166,14 @@ class _HomePageState extends State<HomePage> with WindowListener {
     super.initState();
     _timeFormat = DateFormat('HH:mm:ss');
     windowManager.addListener(this);
-    _musicDirectory = widget.initialDirectory;
+    _musicDirectory = widget.initialDirectory ?? p.join(Directory.current.path, 'assets', 'audio');
     _folderController.text = _musicDirectory;
     WidgetsBinding.instance.addPostFrameCallback((_) => _initialize());
   }
 
   Future<void> _initialize() async {
     final controller = context.read<PlayerController>();
-    _prefs = widget.prefs;
+    _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
       await controller.setVolume(storedVolume);
