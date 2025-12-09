@@ -371,27 +371,12 @@ class _HomePageState extends State<HomePage> with WindowListener {
                   onSubmitted: (_) => _reloadFromFolder(),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    IconButton(
-                      tooltip: 'Sort by name',
-                      onPressed: () => _sortSchedule(byName: true),
-                      icon: const Icon(Icons.sort_by_alpha),
-                    ),
-                    IconButton(
-                      tooltip: 'Sort by start time',
-                      onPressed: () => _sortSchedule(byName: false),
-                      icon: const Icon(Icons.access_time),
-                    ),
-                  ],
-                ),
               ],
             ),
           ),
           Expanded(
-            child: ReorderableListView.builder(
+            child: ListView.builder(
               itemCount: schedule.entries.length,
-              onReorder: _reorderEntries,
               itemBuilder: (context, index) {
                 final entry = schedule.entries[index];
                 final isCurrent = index == currentIndex;
@@ -422,7 +407,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const Icon(Icons.drag_indicator),
                     ],
                   ),
                 );
@@ -576,38 +560,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     }
   }
 
-  Future<void> _sortSchedule({required bool byName}) async {
-    final controller = context.read<PlayerController>();
-    final entries = [...controller.schedule.entries];
-    final orderedFiles = entries.map((e) => e.file).toList();
-    if (byName) {
-      orderedFiles.sort((a, b) => p.basename(a).compareTo(p.basename(b)));
-    }
-    final updated = await _buildScheduleForOrder(orderedFiles);
-    await controller.updateSchedule(updated);
-    await persistScheduleToFile(updated, _prefs, _musicDirectory);
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> _reorderEntries(int oldIndex, int newIndex) async {
-    final controller = context.read<PlayerController>();
-    final entries = [...controller.schedule.entries];
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-    final item = entries.removeAt(oldIndex);
-    entries.insert(newIndex, item);
-    final orderedFiles = entries.map((e) => e.file).toList();
-    final updated = await _buildScheduleForOrder(orderedFiles);
-    await controller.updateSchedule(updated);
-    await persistScheduleToFile(updated, _prefs, _musicDirectory);
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   Future<void> _updateStart(ScheduleEntry entry, String value) async {
     final parts = value.split(':').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
     if (parts.length != 3) {
@@ -640,10 +592,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     } catch (_) {
       _showParseError();
     }
-  }
-
-  Future<DaySchedule> _buildScheduleForOrder(List<String> orderedFiles) async {
-    return buildSequentialSchedule(orderedFiles);
   }
 
   void _syncStartControllers(DaySchedule schedule) {
