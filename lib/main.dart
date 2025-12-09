@@ -23,10 +23,13 @@ const _kTrayIconPngBase64 =
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-   MediaKit.ensureInitialized();
+  debugPrint('Initializing MediaKit…');
+  MediaKit.ensureInitialized();
+  debugPrint('MediaKit initialized.');
   final prefs = await SharedPreferences.getInstance();
   final defaultMusicDir = p.join(Directory.current.path, 'assets', 'audio');
   final musicDirectory = prefs.getString('music_directory') ?? defaultMusicDir;
+  debugPrint('Using music directory: $musicDirectory');
   await windowManager.ensureInitialized();
   const windowOptions = WindowOptions(
     size: Size(980, 620),
@@ -177,9 +180,12 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
+      debugPrint('Restoring volume: ${storedVolume.toStringAsFixed(2)}');
       await controller.setVolume(storedVolume);
     }
+    debugPrint('Starting playback for current time.');
     await controller.playForNow(DateTime.now());
+    debugPrint('Playback started.');
     _tickSubscription = alignedSecondTicks().listen((now) {
       controller.resyncIfDrifted(now);
       if (mounted) {

@@ -11,6 +11,7 @@ import 'schedule.dart';
 class PlayerController extends ChangeNotifier {
   PlayerController(this.schedule) {
     _player = Player(configuration: const PlayerConfiguration());
+    debugPrint('PlayerController initialized with ${schedule.entries.length} entries.');
     _positionSubscription = _player.stream.position.listen((position) {
       audioPosition = position;
       notifyListeners();
@@ -72,6 +73,7 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> setVolume(double value) async {
     volume = value.clamp(0.0, 1.0);
+    debugPrint('Setting volume to ${volume.toStringAsFixed(2)}');
     await _player.setVolume(volume);
     notifyListeners();
   }
@@ -139,6 +141,7 @@ class PlayerController extends ChangeNotifier {
     clearError();
     currentIndex = index;
     final entry = schedule.entries[index];
+    debugPrint('Attempting to play index $index -> ${entry.file} at $nowSec seconds.');
     final media = await _resolveMedia(entry.file);
     if (media == null) {
       _setError('Missing audio file: ${entry.file}');
@@ -158,6 +161,7 @@ class PlayerController extends ChangeNotifier {
     );
     currentTrackDuration = duration;
     final seekDuration = explicitSeek ?? _offsetToSeek(schedule.offsetSinceStart(nowSec), entry, duration);
+    debugPrint('Opening ${entry.file} with duration ${duration.inMilliseconds}ms, seeking to ${seekDuration.inMilliseconds}ms.');
     await _player.seek(seekDuration);
     await _player.setVolume(volume);
     await _player.play();
@@ -195,21 +199,26 @@ class PlayerController extends ChangeNotifier {
 
   Future<Media?> _resolveMedia(String filePath) async {
     if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
+      debugPrint('Resolving URL media: $filePath');
       return Media(filePath);
     }
     if (filePath.startsWith('asset://')) {
+      debugPrint('Resolving pre-tagged asset media: $filePath');
       return Media(filePath);
     }
     try {
       await rootBundle.load(filePath);
       final normalized = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+      debugPrint('Resolved bundled asset: $normalized');
       return Media('asset:///$normalized');
     } catch (_) {
       final file = File(filePath);
       if (file.existsSync()) {
+        debugPrint('Resolved filesystem media: ${file.absolute.path}');
         return Media(p.toUri(file.absolute.path).toString());
       }
     }
+    debugPrint('Failed to resolve media for: $filePath');
     return null;
   }
 
