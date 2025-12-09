@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -155,16 +156,37 @@ Future<DaySchedule> buildSequentialSchedule(List<String> orderedFiles) async {
     throw StateError('No audio files found in the requested order.');
   }
 
+  final probePlayer = Player(id: 'schedule_probe_${DateTime.now().microsecondsSinceEpoch}');
+  final durations = <Duration>[];
+  try {
+    for (final file in existingFiles) {
+      final duration = await _probeDuration(file, probePlayer);
+      durations.add(duration);
+    }
+  } finally {
+    await probePlayer.dispose();
+  }
+
+  final totalSeconds = durations.fold<int>(0, (sum, d) => sum + d.inSeconds);
+  if (totalSeconds == 0) {
+    throw StateError('Unable to determine durations for the provided audio files.');
+  }
+
   final entries = <ScheduleEntry>[];
-  for (var hour = 0; hour < 24; hour++) {
-    final file = existingFiles[hour % existingFiles.length];
-    entries.add(
-      ScheduleEntry(
-        startSec: hour * 3600,
-        file: file.path,
-        loopWithinSlot: true,
-      ),
-    );
+  var startSec = 0;
+  while (startSec < DaySchedule.secondsPerDay) {
+    for (var i = 0; i < existingFiles.length && startSec < DaySchedule.secondsPerDay; i++) {
+      final file = existingFiles[i];
+      final durationSec = durations[i].inSeconds.clamp(1, DaySchedule.secondsPerDay);
+      entries.add(
+        ScheduleEntry(
+          startSec: startSec,
+          file: file.path,
+          loopWithinSlot: false,
+        ),
+      );
+      startSec += durationSec;
+    }
   }
 
   return DaySchedule.fromEntries(entries);
@@ -264,3 +286,22 @@ Future<DaySchedule> loadScheduleFromAssets(String path) async {
 }
 
 int nowSecondsOfDay(DateTime now) => now.hour * 3600 + now.minute * 60 + now.second;
+
+Future<Duration> _probeDuration(File file, Player probePlayer) async {
+  try {
+    final uri = file.absolute.uri.toString();
+    await probePlayer.open(Media(uri), play: false);
+    final duration = await probePlayer.stream.duration.firstWhere(
+      (d) => d != Duration.zero,
+      orElse: () => Duration.zero,
+    );
+    if (duration == Duration.zero) {
+      log('Duration probe returned zero for ${file.path}; using 1 second fallback.');
+      return const Duration(seconds: 1);
+    }
+    return duration;
+  } catch (e, st) {
+    log('Failed to probe duration for ${file.path}: $e', stackTrace: st);
+    return const Duration(seconds: 1);
+  }
+}
