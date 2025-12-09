@@ -73,8 +73,9 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> setVolume(double value) async {
     volume = value.clamp(0.0, 1.0);
-    debugPrint('Setting volume to ${volume.toStringAsFixed(2)}');
-    await _player.setVolume(volume);
+    final percent = (volume * 100).clamp(0, 100);
+    debugPrint('Setting volume to ${percent.toStringAsFixed(1)}%');
+    await _player.setVolume(percent);
     notifyListeners();
   }
 
@@ -163,7 +164,7 @@ class PlayerController extends ChangeNotifier {
     final seekDuration = explicitSeek ?? _offsetToSeek(schedule.offsetSinceStart(nowSec), entry, duration);
     debugPrint('Opening ${entry.file} with duration ${duration.inMilliseconds}ms, seeking to ${seekDuration.inMilliseconds}ms.');
     await _player.seek(seekDuration);
-    await _player.setVolume(volume);
+    await _player.setVolume(volume * 100);
     await _player.play();
     playing = true;
     audioPosition = seekDuration;

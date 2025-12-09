@@ -180,7 +180,8 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
-      debugPrint('Restoring volume: ${storedVolume.toStringAsFixed(2)}');
+      final percent = (storedVolume * 100).clamp(0, 100);
+      debugPrint('Restoring volume: ${percent.toStringAsFixed(1)}%');
       await controller.setVolume(storedVolume);
     }
     debugPrint('Starting playback for current time.');
