@@ -3,7 +3,6 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:media_kit/media_kit.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -131,7 +130,7 @@ Future<DaySchedule> loadScheduleFromFolder(String folderPath, SharedPreferences 
         return lower.endsWith('.mp3') || lower.endsWith('.wav') || lower.endsWith('.flac');
       })
       .toList()
-    ..sort((a, b) => a.path.compareTo(b.path));
+    ..sort(_compareByLeadingIndexThenName);
 
   if (files.isEmpty) {
     throw StateError('No audio files found in $folderPath');
@@ -156,81 +155,42 @@ Future<DaySchedule> buildSequentialSchedule(List<String> orderedFiles) async {
     throw StateError('No audio files found in the requested order.');
   }
 
-  final durations = await _probeDurations(existingFiles.map((f) => f.path).toList());
-  if (durations.isEmpty) {
-    throw StateError('Unable to determine durations for any audio files.');
-  }
-
   final entries = <ScheduleEntry>[];
-  var cursor = 0;
-  while (cursor < DaySchedule.secondsPerDay) {
-    for (final file in existingFiles) {
-      entries.add(ScheduleEntry(startSec: cursor, file: file.path, loopWithinSlot: false));
-      final duration = (durations[file.path] ?? 1).clamp(1, DaySchedule.secondsPerDay) as int;
-      cursor += duration;
-      if (cursor >= DaySchedule.secondsPerDay) {
-        break;
-      }
-    }
+  for (var hour = 0; hour < 24; hour++) {
+    final file = existingFiles[hour % existingFiles.length];
+    entries.add(
+      ScheduleEntry(
+        startSec: hour * 3600,
+        file: file.path,
+        loopWithinSlot: true,
+      ),
+    );
   }
 
   return DaySchedule.fromEntries(entries);
 }
 
+int _leadingIndexFor(File file) {
+  final name = p.basenameWithoutExtension(file.path);
+  final match = RegExp(r'^(\d+)').firstMatch(name);
+  return match != null ? int.parse(match.group(1)!) : -1;
+}
+
+int _compareByLeadingIndexThenName(File a, File b) {
+  final aIndex = _leadingIndexFor(a);
+  final bIndex = _leadingIndexFor(b);
+  final hasA = aIndex >= 0;
+  final hasB = bIndex >= 0;
+  if (hasA && hasB) {
+    final cmp = aIndex.compareTo(bIndex);
+    if (cmp != 0) return cmp;
+  } else if (hasA != hasB) {
+    return hasA ? -1 : 1;
+  }
+  return a.path.compareTo(b.path);
+}
+
 File _scheduleFileFor(String folderPath) => File(p.join(folderPath, _kScheduleFileName));
-
-Future<Map<String, int>> _probeDurations(List<String> filePaths) async {
-  final durations = <String, int>{};
-  final player = Player(configuration: const PlayerConfiguration());
-  try {
-    for (final path in filePaths) {
-      final media = await _resolveMedia(path);
-      if (media == null) {
-        log('Unable to resolve media for $path');
-        continue;
-      }
-      try {
-        await player.open(media, play: false);
-        final duration = await player.stream.duration.firstWhere(
-          (d) => d != Duration.zero,
-          orElse: () => Duration.zero,
-        );
-        await player.stop();
-        if (duration == Duration.zero) {
-          log('Unable to read duration for $path, using 1 second as fallback');
-          durations[path] = 1;
-        } else {
-          durations[path] = duration.inSeconds;
-        }
-      } catch (e, st) {
-        log('Failed to load $path: $e', stackTrace: st);
-      }
-    }
-  } finally {
-    await player.dispose();
-  }
-  return durations;
-}
-
-Future<Media?> _resolveMedia(String path) async {
-  if (path.startsWith('http://') || path.startsWith('https://')) {
-    return Media(path);
-  }
-  if (path.startsWith('asset://')) {
-    return Media(path);
-  }
-  try {
-    await rootBundle.load(path);
-    final normalized = path.startsWith('/') ? path.substring(1) : path;
-    return Media('asset:///$normalized');
-  } catch (_) {
-    final file = File(path);
-    if (file.existsSync()) {
-      return Media(p.toUri(file.absolute.path).toString());
-    }
-  }
-  return null;
-}
 
 Future<void> persistScheduleToFile(
   DaySchedule schedule,
