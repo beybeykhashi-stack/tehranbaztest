@@ -17,7 +17,7 @@ import 'player_controller.dart';
 import 'schedule.dart';
 
 const _kAppTitle = 'ChronoPlayer';
-const _keepPlayingOnClose = true;
+const _keepPlayingOnClose = false;
 const _kTrayIconPngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAQAAACENnwnAAAAG0lEQVR42mP8//8/AzGAiYGIgQGB4T8QAJrHBB//uKxsAAAAAElFTkSuQmCC';
 
@@ -245,6 +245,10 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Future<void> _trayQuit() async {
+    await _quitApp();
+  }
+
+  Future<void> _quitApp() async {
     await _systemTray.destroy();
     await context.read<PlayerController>().disposeAsync();
     await windowManager.destroy();
@@ -270,11 +274,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   @override
   Future<void> onWindowClose() async {
-    if (_keepPlayingOnClose) {
-      await windowManager.hide();
-    } else {
-      await windowManager.destroy();
-    }
+    await _quitApp();
   }
 
   @override
