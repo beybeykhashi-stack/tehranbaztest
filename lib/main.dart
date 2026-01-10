@@ -17,16 +17,19 @@ import 'player_controller.dart';
 import 'schedule.dart';
 
 const _kAppTitle = 'ChronoPlayer';
-const _keepPlayingOnClose = true;
+const _keepPlayingOnClose = false;
 const _kTrayIconPngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAQAAACENnwnAAAAG0lEQVR42mP8//8/AzGAiYGIgQGB4T8QAJrHBB//uKxsAAAAAElFTkSuQmCC';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-   MediaKit.ensureInitialized();
+  debugPrint('Initializing MediaKit…');
+  MediaKit.ensureInitialized();
+  debugPrint('MediaKit initialized.');
   final prefs = await SharedPreferences.getInstance();
   final defaultMusicDir = p.join(Directory.current.path, 'assets', 'audio');
   final musicDirectory = prefs.getString('music_directory') ?? defaultMusicDir;
+  debugPrint('Using music directory: $musicDirectory');
   await windowManager.ensureInitialized();
   const windowOptions = WindowOptions(
     size: Size(980, 620),
@@ -177,9 +180,13 @@ class _HomePageState extends State<HomePage> with WindowListener {
     _prefs = widget.prefs ?? await SharedPreferences.getInstance();
     final storedVolume = _prefs.getDouble('volume');
     if (storedVolume != null) {
+      final percent = (storedVolume * 100).clamp(0, 100);
+      debugPrint('Restoring volume: ${percent.toStringAsFixed(1)}%');
       await controller.setVolume(storedVolume);
     }
+    debugPrint('Starting playback for current time.');
     await controller.playForNow(DateTime.now());
+    debugPrint('Playback started.');
     _tickSubscription = alignedSecondTicks().listen((now) {
       controller.resyncIfDrifted(now);
       if (mounted) {
@@ -238,6 +245,10 @@ class _HomePageState extends State<HomePage> with WindowListener {
   }
 
   Future<void> _trayQuit() async {
+    await _quitApp();
+  }
+
+  Future<void> _quitApp() async {
     await _systemTray.destroy();
     await context.read<PlayerController>().disposeAsync();
     await windowManager.destroy();
@@ -263,11 +274,7 @@ class _HomePageState extends State<HomePage> with WindowListener {
 
   @override
   Future<void> onWindowClose() async {
-    if (_keepPlayingOnClose) {
-      await windowManager.hide();
-    } else {
-      await windowManager.destroy();
-    }
+    await _quitApp();
   }
 
   @override
@@ -364,27 +371,12 @@ class _HomePageState extends State<HomePage> with WindowListener {
                   onSubmitted: (_) => _reloadFromFolder(),
                 ),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    IconButton(
-                      tooltip: 'Sort by name',
-                      onPressed: () => _sortSchedule(byName: true),
-                      icon: const Icon(Icons.sort_by_alpha),
-                    ),
-                    IconButton(
-                      tooltip: 'Sort by start time',
-                      onPressed: () => _sortSchedule(byName: false),
-                      icon: const Icon(Icons.access_time),
-                    ),
-                  ],
-                ),
               ],
             ),
           ),
           Expanded(
-            child: ReorderableListView.builder(
+            child: ListView.builder(
               itemCount: schedule.entries.length,
-              onReorder: _reorderEntries,
               itemBuilder: (context, index) {
                 final entry = schedule.entries[index];
                 final isCurrent = index == currentIndex;
@@ -415,7 +407,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const Icon(Icons.drag_indicator),
                     ],
                   ),
                 );
@@ -569,38 +560,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     }
   }
 
-  Future<void> _sortSchedule({required bool byName}) async {
-    final controller = context.read<PlayerController>();
-    final entries = [...controller.schedule.entries];
-    final orderedFiles = entries.map((e) => e.file).toList();
-    if (byName) {
-      orderedFiles.sort((a, b) => p.basename(a).compareTo(p.basename(b)));
-    }
-    final updated = await _buildScheduleForOrder(orderedFiles);
-    await controller.updateSchedule(updated);
-    await persistScheduleToFile(updated, _prefs, _musicDirectory);
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  Future<void> _reorderEntries(int oldIndex, int newIndex) async {
-    final controller = context.read<PlayerController>();
-    final entries = [...controller.schedule.entries];
-    if (newIndex > oldIndex) {
-      newIndex -= 1;
-    }
-    final item = entries.removeAt(oldIndex);
-    entries.insert(newIndex, item);
-    final orderedFiles = entries.map((e) => e.file).toList();
-    final updated = await _buildScheduleForOrder(orderedFiles);
-    await controller.updateSchedule(updated);
-    await persistScheduleToFile(updated, _prefs, _musicDirectory);
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   Future<void> _updateStart(ScheduleEntry entry, String value) async {
     final parts = value.split(':').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
     if (parts.length != 3) {
@@ -633,10 +592,6 @@ class _HomePageState extends State<HomePage> with WindowListener {
     } catch (_) {
       _showParseError();
     }
-  }
-
-  Future<DaySchedule> _buildScheduleForOrder(List<String> orderedFiles) async {
-    return buildSequentialSchedule(orderedFiles);
   }
 
   void _syncStartControllers(DaySchedule schedule) {
